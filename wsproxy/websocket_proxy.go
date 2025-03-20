@@ -197,6 +197,11 @@ func (p *Proxy) proxy(w http.ResponseWriter, r *http.Request) {
             request.Header.Set(header, r.Header.Get(header))
         }
     }
+    unary := false
+    if unaryHeader := r.Header.Get("Request-Unary"); unaryHeader != "" {
+        unary = unaryHeader == "true"
+    }
+
     // If token cookie is present, populate Authorization header from the cookie instead.
     if cookie, err := r.Cookie(p.tokenCookieName); err == nil {
         request.Header.Set("Authorization", "Bearer "+cookie.Value)
@@ -209,18 +214,15 @@ func (p *Proxy) proxy(w http.ResponseWriter, r *http.Request) {
         request = p.requestMutator(r, request)
     }
 
-    // 新增处理空body的逻辑
-    if request.Method == http.MethodPost && r.ContentLength == 0 {
-        request.Body = http.NoBody
-    }
-
     responseBodyR, responseBodyW := io.Pipe()
     response := newInMemoryResponseWriter(responseBodyW)
     go func() {
         <-ctx.Done()
         p.logger.Debugln("closing pipes")
-        requestBodyW.CloseWithError(io.EOF)
         responseBodyW.CloseWithError(io.EOF)
+        if !unary {
+            requestBodyW.CloseWithError(io.EOF)
+        }
         response.closed <- true
     }()
 
@@ -235,9 +237,12 @@ func (p *Proxy) proxy(w http.ResponseWriter, r *http.Request) {
             conn.SetReadDeadline(time.Now().Add(p.pongWait))
             conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(p.pongWait)); return nil })
         }
-        defer func() {
-            cancelFn()
-        }()
+        if !unary {
+            defer func() {
+                cancelFn()
+            }()
+        }
+
         for {
             select {
             case <-ctx.Done():
@@ -263,6 +268,10 @@ func (p *Proxy) proxy(w http.ResponseWriter, r *http.Request) {
             if err != nil {
                 p.logger.Warnln("[read] error writing message to upstream http server:", err)
                 return
+            }
+            if unary {
+                requestBodyW.CloseWithError(io.EOF)
+                break
             }
         }
     }()
