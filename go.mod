@@ -1,4 +1,4 @@
-module github.com/tmc/grpc-websocket-proxy
+module github.com/tongpengpeng/grpc-websocket-proxy
 
 go 1.22
 
